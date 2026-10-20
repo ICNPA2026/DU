@@ -1,0 +1,232 @@
+const contentsList = document.getElementById("contentsList");
+const sectionsEl = document.getElementById("sections");
+const authorsEl = document.getElementById("authors");
+const searchEl = document.getElementById("search");
+const countEl = document.getElementById("count");
+
+let sections = [];
+
+// Parse CSV text handling commas inside quoted values
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
+
+  return lines.slice(1).filter(line => line.trim() !== "").map(line => {
+    const row = [];
+    let insideQuote = false;
+    let entry = "";
+
+    for (let char of line) {
+      if (char === '"') {
+        insideQuote = !insideQuote;
+      } else if (char === ',' && !insideQuote) {
+        row.push(entry.trim());
+        entry = "";
+      } else {
+        entry += char;
+      }
+    }
+    row.push(entry.trim());
+
+    const record = {};
+    headers.forEach((header, index) => {
+      record[header] = row[index] ? row[index].replace(/^"|"$/g, '') : "";
+    });
+    return record;
+  });
+}
+
+// Convert CSV rows into grouped section structures (skips empty rows automatically)
+function processCSVData(records) {
+  const sectionMap = new Map();
+
+  records.forEach(r => {
+    const label = (r.section_label || "").trim();
+    const title = (r.section_title || "").trim();
+    const entryCode = (r.entry_code || "").trim();
+    const entryTitle = (r.title || "").trim();
+
+    // SKIP completely blank rows or rows without title/section details
+    if (!label && !title && !entryTitle) {
+      return;
+    }
+
+    // Fallbacks only if an abstract exists but section details were skipped
+    const finalLabel = label || "A";
+    const finalTitle = title || "General";
+    const sectionId = finalTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+    if (!sectionMap.has(sectionId)) {
+      sectionMap.set(sectionId, {
+        id: sectionId,
+        label: finalLabel,
+        title: finalTitle,
+        entries: []
+      });
+    }
+
+    sectionMap.get(sectionId).entries.push({
+      id: entryCode,
+      title: entryTitle,
+      authors: r.authors || "",
+      pdf: r.pdf_url || "#"
+    });
+  });
+
+  // Sort sections alphabetically/numerically by section_label (A to Z, 1 to 9)
+  return Array.from(sectionMap.values()).sort((a, b) =>
+    a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' })
+  );
+}
+
+function allEntries() {
+  return sections.flatMap(s => s.entries.map(e => ({ ...e, sectionId: s.id, sectionTitle: s.title })));
+}
+
+function renderContents() {
+  const numberedSections = sections.filter(s => /^\d+$/.test(s.label.trim()));
+  const letteredSections = sections.filter(s => /^[A-Za-z]+$/.test(s.label.trim()));
+
+  let html = '<div class="contents-container">';
+
+  // 1, 2, 3 stacked vertically on separate lines
+  html += '<div class="vertical-stack">';
+  numberedSections.forEach(s => {
+    html += `<div class="stack-row">
+      <a href="#${s.id}"><strong>${escapeHtml(s.label)}. ${escapeHtml(s.title)}</strong></a>
+    </div>`;
+  });
+
+  if (!numberedSections.some(s => s.label.trim() === "3")) {
+    html += `<div class="stack-row">
+      <strong>3. Contributory Talk and Poster Presentation</strong>
+    </div>`;
+  }
+  html += '</div>';
+
+  // A, B, C... arranged strictly into 3 columns per row
+  if (letteredSections.length > 0) {
+    html += '<div class="grid-3col">';
+    letteredSections.forEach(s => {
+      html += `<div class="grid-cell">
+        <a href="#${s.id}">${escapeHtml(s.label)}. ${escapeHtml(s.title)}</a>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  html += '</div>';
+  contentsList.innerHTML = html;
+}
+
+function renderSections(query = "") {
+  const q = query.trim().toLowerCase();
+  let shown = 0;
+  sectionsEl.innerHTML = sections.map(s => {
+    const entries = s.entries.filter(e =>
+      !q || [e.id, e.title, e.authors].join(" ").toLowerCase().includes(q)
+    );
+    shown += entries.length;
+    if (q && entries.length === 0) return "";
+
+    const rows = entries.map(e => `
+      <article class="entry" id="${escapeHtml(e.id)}">
+        <div class="number">${escapeHtml(e.id)}</div>
+        <div>
+          <div class="title">${escapeHtml(e.title)}</div>
+          <div class="authors">${escapeHtml(e.authors)}</div>
+        </div>
+        <a class="pdf" href="${escapeHtml(e.pdf)}" target="_blank" rel="noopener">PDF</a>
+      </article>
+    `).join("");
+
+    return `<section class="conference-section" id="${s.id}">
+      <div class="section-heading">
+        <h2>${escapeHtml(s.label)}. ${escapeHtml(s.title)}</h2>
+        <a href="#contents">Top ↑</a>
+      </div>
+      ${rows}
+    </section>`;
+  }).join("");
+
+  countEl.textContent = `${shown} abstract${shown === 1 ? "" : "s"}`;
+}
+
+function renderAuthors() {
+  const map = new Map();
+  allEntries().forEach(e => {
+    e.authors.split(/[,;]/).map(x => x.trim()).filter(Boolean).forEach(author => {
+      if (!map.has(author)) map.set(author, []);
+      map.get(author).push(e.id);
+    });
+  });
+
+  authorsEl.innerHTML = [...map.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, ids]) =>
+      `<div class="author-row">
+        <div class="author-name">${escapeHtml(name)}</div>
+        <div>${ids.map(id => `<a href="#${escapeHtml(id)}">${escapeHtml(id)}</a>`).join(", ")}</div>
+      </div>`
+    ).join("");
+}
+
+function escapeHtml(s) {
+  if (!s) return "";
+  return String(s)
+    // First safely escape standard HTML chars
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;")
+    // Lowercase Greek symbols
+    .replace(/&amp;alpha;/g, "α")
+    .replace(/&amp;beta;/g, "β")
+    .replace(/&amp;gamma;/g, "γ")
+    .replace(/&amp;delta;/g, "δ")
+    .replace(/&amp;epsilon;/g, "ε")
+    .replace(/&amp;theta;/g, "θ")
+    .replace(/&amp;lambda;/g, "λ")
+    .replace(/&amp;mu;/g, "μ")
+    .replace(/&amp;nu;/g, "ν")
+    .replace(/&amp;pi;/g, "π")
+    .replace(/&amp;sigma;/g, "σ")
+    .replace(/&amp;tau;/g, "τ")
+    .replace(/&amp;phi;/g, "φ")
+    .replace(/&amp;omega;/g, "ω")
+    // Uppercase Greek symbols
+    .replace(/&amp;Alpha;/g, "Α")
+    .replace(/&amp;Gamma;/g, "Γ")
+    .replace(/&amp;Delta;/g, "Δ")
+    .replace(/&amp;Theta;/g, "Θ")
+    .replace(/&amp;Lambda;/g, "Λ")
+    .replace(/&amp;Sigma;/g, "Σ")
+    .replace(/&amp;Phi;/g, "Φ")
+    .replace(/&amp;Omega;/g, "Ω");
+}
+
+async function init() {
+  try {
+    // Dynamic timestamp forces GitHub Pages/Browser to download the latest data.csv
+    const response = await fetch("./data.csv?v=" + Date.now());
+    if (!response.ok) throw new Error(`Failed to load data.csv (Status: ${response.status})`);
+    
+    const csvText = await response.text();
+    const records = parseCSV(csvText);
+
+    sections = processCSVData(records);
+
+    renderContents();
+    renderSections();
+    renderAuthors();
+
+    searchEl.addEventListener("input", e => renderSections(e.target.value));
+  } catch (error) {
+    sectionsEl.innerHTML = `<div class="empty">Error loading data: ${error.message}. Make sure data.csv exists in your repository root.</div>`;
+  }
+}
+
+init();
